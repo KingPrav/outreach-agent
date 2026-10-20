@@ -1,0 +1,19 @@
+# MCP Python SDK (v2): build our MCP servers and connect to them from the agent.
+# v2 renamed some APIs (FastMCP -> MCPServer), so v1 tutorials won't match exactly.
+mcp>=2.3,<3
+
+# LangGraph: the agent is a graph of steps (nodes) with shared state,
+# human-approval pauses and parallel research. No LangChain needed.
+langgraph>=1.0,<2
+
+# OpenAI client: the model that shortlists people, summarizes research and drafts messages.
+openai>=1.40.0
+
+# HTTP client the MCP servers use to call Hunter.io and the web search API.
+httpx>=0.27.0
+
+# Loads API keys from the .env file.
+python-dotenv>=1.0.0
+
+# Reads your resume if it's a PDF.
+pypdf>=4.0.0
