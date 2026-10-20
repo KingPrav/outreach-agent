@@ -1,0 +1,14 @@
+# Secrets: real API keys live here, never commit
+.env
+
+# Personal data: your resume and the generated drafts/research about people
+profile/
+outputs/
+
+# Python virtual environment and caches
+.venv/
+__pycache__/
+*.pyc
+
+# macOS Finder metadata
+.DS_Store
