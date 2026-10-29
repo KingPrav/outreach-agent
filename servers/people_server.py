@@ -75,23 +75,28 @@ def cache_path(key: str) -> Path:
 # Tools: what the agent can call.
 # ---------------------------------------------------------------------------
 @mcp.tool()
-async def find_people(domain: str, departments: str = "hr,it,management", limit: int = 20) -> dict:
+async def find_people(domain: str = "", company: str = "", departments: str = "hr,it,management",
+                      limit: int = 10) -> dict:
     """Find people who work at a company, from Hunter.io's database.
 
     Args:
-        domain: The company's website domain, e.g. "stripe.com" (not the company name).
+        domain: The domain the company's work emails use, e.g. "stripe.com".
+        company: The company name, e.g. "Stripe". Use this when you're not sure of the
+            email domain: Hunter works out the domain itself. Give domain or company.
         departments: Comma-separated Hunter departments. Use "hr" for recruiters and
             talent acquisition; "it", "management", "research" or "product" for
             engineering leaders. Default: "hr,it,management".
         limit: Most people to return (1-100). Each 10 people costs 1 Hunter credit.
             The free plan allows at most 10 per search.
 
-    Returns each person's name, position, seniority, department, LinkedIn URL,
-    email, and how confident Hunter is about the email.
+    Returns the domain Hunter searched, plus each person's name, position, seniority,
+    department, LinkedIn URL, email, and how confident Hunter is about the email.
     """
-    domain = clean_domain(domain)
+    domain = clean_domain(domain) if domain else ""
+    if not (domain or company.strip()):
+        return {"error": "Give a domain or a company name."}
     limit = max(1, min(int(limit), 100))
-    key = f"{domain}__{departments}__{limit}"
+    key = f"{domain or 'company=' + company.strip().lower()}__{departments}__{limit}"
 
     # Reuse a recent result instead of spending credits again.
     path = cache_path(key)
@@ -100,7 +105,11 @@ async def find_people(domain: str, departments: str = "hr,it,management", limit:
         cached["from_cache"] = True
         return cached
 
-    params = {"domain": domain, "department": departments, "type": "personal", "limit": limit}
+    params = {"department": departments, "type": "personal", "limit": limit}
+    if domain:
+        params["domain"] = domain
+    else:
+        params["company"] = company.strip()
     result = await hunter_get("domain-search", params)
     if "error" in result and "limited to 10" in result["error"] and limit > 10:
         # The free plan caps results at 10 per search: retry within the cap.
@@ -126,7 +135,7 @@ async def find_people(domain: str, departments: str = "hr,it,management", limit:
         })
 
     output = {
-        "domain": domain,
+        "domain": data.get("domain") or domain,     # with company=..., Hunter tells us the domain it used
         "organization": data.get("organization"),
         "email_pattern": data.get("pattern"),   # e.g. "{first}.{last}"
         "count": len(people),

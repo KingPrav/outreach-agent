@@ -58,7 +58,8 @@ EMAIL_WORD_LIMIT = 160
 class State(TypedDict, total=False):
     company: str
     role: str
-    domain: str
+    domain: str                                         # the email domain people were found at
+    domain_candidates: list[str]                        # fallback domains to try
     job_url: str
     profile: dict                                       # your resume, structured
     candidates: list[dict]                              # everyone Hunter found
@@ -256,46 +257,55 @@ def build_graph(people: ClientSession, research: ClientSession, llm: AsyncOpenAI
 
     # ---- find_domain [MCP research tool + code] ---------------------------
     async def find_domain(state: State) -> dict:
+        """Collect possible email domains, used as fallbacks if Hunter can't find the
+        company by name. (Careers sites like joinbytedance.com are often NOT the
+        email domain, which is why we don't trust any single guess.)"""
         if state.get("domain"):
-            return {"domain": base_domain(state["domain"])}
-
-        # 1. A job link on the company's own site gives the answer directly.
+            return {"domain_candidates": [base_domain(state["domain"])]}
+        candidates = []
         if state.get("job_url") and is_company_site(base_domain(state["job_url"])):
-            domain = base_domain(state["job_url"])
-            print(f"  [find_domain] {state['company']} -> {domain} (from the job link)")
-            return {"domain": domain}
-
-        # 2. Otherwise search, skip known non-company sites, and prefer a domain
-        #    that contains the company's name (datadoghq.com for "Datadog").
+            candidates.append(base_domain(state["job_url"]))
         data = tool_json(await research.call_tool(
             "web_search", {"query": f"{state['company']} official website", "max_results": 8}))
-        domains = [base_domain(r["url"]) for r in data.get("results", [])]
-        domains = [d for d in dict.fromkeys(domains) if is_company_site(d)]
+        candidates += [d for d in (base_domain(r["url"]) for r in data.get("results", [])) if is_company_site(d)]
         name = re.sub(r"[^a-z0-9]", "", state["company"].lower())
-        matching = [d for d in domains if name and name in d.replace(".", "").replace("-", "")]
-        if matching or domains:
-            domain = (matching or domains)[0]
-            print(f"  [find_domain] {state['company']} -> {domain}  (wrong? re-run with --domain)")
-            return {"domain": domain}
-        sys.exit(f"Couldn't work out {state['company']}'s website. Re-run with --domain company.com")
+
+        def rank(d: str) -> int:   # "bytedance.com" before "joinbytedance.com" before "other.com"
+            label = d.split(".")[0].replace("-", "")
+            return 0 if label == name else 1 if name and name in label else 2
+
+        candidates = sorted(dict.fromkeys(candidates), key=rank)[:3]
+        print(f"  [find_domain] fallback domains: {candidates or 'none'}")
+        return {"domain_candidates": candidates}
 
     # ---- find_people [MCP people tool] ------------------------------------
     async def find_people(state: State) -> dict:
-        # Hunter's free plan returns at most 10 people per search, so search
-        # recruiters and engineering leaders separately (1 credit each).
-        people_found, cached = {}, True
-        for departments in ("hr", "it,management,research"):
-            data = tool_json(await people.call_tool(
-                "find_people", {"domain": state["domain"], "departments": departments, "limit": 10}))
-            if "error" in data:
-                sys.exit(f"Hunter: {data['error']}")
-            cached = cached and data.get("from_cache", False)
-            for p in data["people"]:
-                people_found.setdefault(p["email"] or p["name"], p)   # skip duplicates
-        candidates = list(people_found.values())
-        note = " (from cache, no credits used)" if cached else ""
-        print(f"  [find_people] {len(candidates)} people at {state['domain']}{note}")
-        return {"candidates": candidates}
+        """Ask Hunter by company name first (it knows which domain the company's
+        emails use), then try the fallback domains until someone is found."""
+        if state.get("domain"):                       # you passed --domain: use only that
+            attempts = [{"domain": d} for d in state["domain_candidates"]]
+        else:
+            attempts = [{"company": state["company"]}] + [{"domain": d} for d in state["domain_candidates"]]
+
+        for target in attempts[:3]:
+            # Hunter's free plan returns at most 10 people per search, so search
+            # recruiters and engineering leaders separately (1 credit each).
+            people_found, cached, domain = {}, True, target.get("domain", "")
+            for departments in ("hr", "it,management,research"):
+                data = tool_json(await people.call_tool(
+                    "find_people", {**target, "departments": departments, "limit": 10}))
+                if "error" in data:
+                    sys.exit(f"Hunter: {data['error']}")
+                cached = cached and data.get("from_cache", False)
+                domain = data.get("domain") or domain
+                for p in data["people"]:
+                    people_found.setdefault(p["email"] or p["name"], p)   # skip duplicates
+            label = f"company name '{target['company']}'" if "company" in target else target["domain"]
+            note = " (from cache, no credits used)" if cached else ""
+            print(f"  [find_people] {len(people_found)} people via {label} -> {domain or '?'}{note}")
+            if people_found:
+                return {"candidates": list(people_found.values()), "domain": domain}
+        return {"candidates": [], "domain": state.get("domain") or (attempts[0].get("domain", "") if attempts else "")}
 
     # ---- shortlist [model] ------------------------------------------------
     async def shortlist(state: State) -> dict:
