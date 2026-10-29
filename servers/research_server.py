@@ -18,6 +18,7 @@ Normally agent.py starts this server for you. To test it by hand:
 
 import hashlib
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -40,6 +41,9 @@ CACHE_SECONDS = 7 * 24 * 3600
 DEFAULT_EXCLUDED = ["linkedin.com"]
 
 MAX_PAGE_CHARS = 6000  # keep page text short enough for the model
+
+# Keep httpx from printing a line for every request into your terminal.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 mcp = MCPServer("research")
 

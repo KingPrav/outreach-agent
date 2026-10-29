@@ -203,8 +203,28 @@ def tool_json(result) -> dict:
     return json.loads(result.content[0].text)
 
 
-NOT_COMPANY_SITES = ("wikipedia.org", "linkedin.com", "crunchbase.com", "glassdoor.com", "indeed.com",
-                     "bloomberg.com", "forbes.com", "youtube.com", "x.com", "twitter.com", "facebook.com")
+NOT_COMPANY_SITES = (
+    "wikipedia.org", "linkedin.com", "crunchbase.com", "glassdoor.com", "indeed.com", "bloomberg.com",
+    "forbes.com", "youtube.com", "x.com", "twitter.com", "facebook.com", "instagram.com", "github.com",
+    "gitlab.com", "medium.com", "reddit.com", "builtin.com", "wellfound.com", "zoominfo.com", "pitchbook.com",
+    "levels.fyi", "yahoo.com", "reuters.com", "cnbc.com", "techcrunch.com",
+    # job boards / applicant tracking systems: a job link on these doesn't tell us the company's domain
+    "greenhouse.io", "lever.co", "ashbyhq.com", "myworkdayjobs.com", "workday.com", "smartrecruiters.com",
+    "jobvite.com", "icims.com", "bamboohr.com", "workable.com",
+)
+
+
+def base_domain(url_or_host: str) -> str:
+    """'https://careers.datadoghq.com/x' -> 'datadoghq.com' (drops subdomains like careers., www.)."""
+    host = urlparse(url_or_host if "//" in url_or_host else f"//{url_or_host}").netloc.lower().split(":")[0]
+    parts = host.split(".")
+    if len(parts) >= 3 and parts[-2] in {"co", "com", "org", "net", "ac"} and len(parts[-1]) == 2:
+        return ".".join(parts[-3:])        # e.g. company.co.uk
+    return ".".join(parts[-2:])
+
+
+def is_company_site(domain: str) -> bool:
+    return bool(domain) and not any(domain == s or domain.endswith("." + s) for s in NOT_COMPANY_SITES)
 
 
 # ===========================================================================
@@ -237,25 +257,45 @@ def build_graph(people: ClientSession, research: ClientSession, llm: AsyncOpenAI
     # ---- find_domain [MCP research tool + code] ---------------------------
     async def find_domain(state: State) -> dict:
         if state.get("domain"):
-            return {}
+            return {"domain": base_domain(state["domain"])}
+
+        # 1. A job link on the company's own site gives the answer directly.
+        if state.get("job_url") and is_company_site(base_domain(state["job_url"])):
+            domain = base_domain(state["job_url"])
+            print(f"  [find_domain] {state['company']} -> {domain} (from the job link)")
+            return {"domain": domain}
+
+        # 2. Otherwise search, skip known non-company sites, and prefer a domain
+        #    that contains the company's name (datadoghq.com for "Datadog").
         data = tool_json(await research.call_tool(
-            "web_search", {"query": f"{state['company']} official website", "max_results": 5}))
-        for r in data.get("results", []):
-            host = urlparse(r["url"]).netloc.lower().removeprefix("www.")
-            if host and not host.endswith(NOT_COMPANY_SITES):
-                print(f"  [find_domain] {state['company']} -> {host}")
-                return {"domain": host}
+            "web_search", {"query": f"{state['company']} official website", "max_results": 8}))
+        domains = [base_domain(r["url"]) for r in data.get("results", [])]
+        domains = [d for d in dict.fromkeys(domains) if is_company_site(d)]
+        name = re.sub(r"[^a-z0-9]", "", state["company"].lower())
+        matching = [d for d in domains if name and name in d.replace(".", "").replace("-", "")]
+        if matching or domains:
+            domain = (matching or domains)[0]
+            print(f"  [find_domain] {state['company']} -> {domain}  (wrong? re-run with --domain)")
+            return {"domain": domain}
         sys.exit(f"Couldn't work out {state['company']}'s website. Re-run with --domain company.com")
 
     # ---- find_people [MCP people tool] ------------------------------------
     async def find_people(state: State) -> dict:
-        data = tool_json(await people.call_tool(
-            "find_people", {"domain": state["domain"], "departments": "hr,it,management,research", "limit": 30}))
-        if "error" in data:
-            sys.exit(f"Hunter: {data['error']}")
-        note = " (from cache, no credits used)" if data.get("from_cache") else ""
-        print(f"  [find_people] {data['count']} people at {state['domain']}{note}")
-        return {"candidates": data["people"]}
+        # Hunter's free plan returns at most 10 people per search, so search
+        # recruiters and engineering leaders separately (1 credit each).
+        people_found, cached = {}, True
+        for departments in ("hr", "it,management,research"):
+            data = tool_json(await people.call_tool(
+                "find_people", {"domain": state["domain"], "departments": departments, "limit": 10}))
+            if "error" in data:
+                sys.exit(f"Hunter: {data['error']}")
+            cached = cached and data.get("from_cache", False)
+            for p in data["people"]:
+                people_found.setdefault(p["email"] or p["name"], p)   # skip duplicates
+        candidates = list(people_found.values())
+        note = " (from cache, no credits used)" if cached else ""
+        print(f"  [find_people] {len(candidates)} people at {state['domain']}{note}")
+        return {"candidates": candidates}
 
     # ---- shortlist [model] ------------------------------------------------
     async def shortlist(state: State) -> dict:

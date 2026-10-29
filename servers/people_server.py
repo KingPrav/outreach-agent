@@ -84,6 +84,7 @@ async def find_people(domain: str, departments: str = "hr,it,management", limit:
             talent acquisition; "it", "management", "research" or "product" for
             engineering leaders. Default: "hr,it,management".
         limit: Most people to return (1-100). Each 10 people costs 1 Hunter credit.
+            The free plan allows at most 10 per search.
 
     Returns each person's name, position, seniority, department, LinkedIn URL,
     email, and how confident Hunter is about the email.
@@ -99,9 +100,12 @@ async def find_people(domain: str, departments: str = "hr,it,management", limit:
         cached["from_cache"] = True
         return cached
 
-    result = await hunter_get("domain-search", {
-        "domain": domain, "department": departments, "type": "personal", "limit": limit,
-    })
+    params = {"domain": domain, "department": departments, "type": "personal", "limit": limit}
+    result = await hunter_get("domain-search", params)
+    if "error" in result and "limited to 10" in result["error"] and limit > 10:
+        # The free plan caps results at 10 per search: retry within the cap.
+        params["limit"] = limit = 10
+        result = await hunter_get("domain-search", params)
     if "error" in result:
         return result
     data = result["data"]
