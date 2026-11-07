@@ -22,6 +22,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from dotenv import load_dotenv
@@ -35,10 +36,18 @@ TAVILY_URL = "https://api.tavily.com"
 CACHE_DIR = ROOT / "outputs" / ".cache" / "tavily"
 CACHE_SECONDS = 7 * 24 * 3600
 
-# LinkedIn pages are left out by default: most content sits behind a login, and
-# automated access to LinkedIn is against its terms. The agent can still keep
-# the LinkedIn URLs that Hunter returns, so you can open profiles yourself.
-DEFAULT_EXCLUDED = ["linkedin.com"]
+# Never searched or read:
+# - LinkedIn: most content is behind a login, and automated access is against its terms. The agent
+#   still keeps the LinkedIn URLs Hunter returns, so you can open profiles yourself.
+# - Personal social platforms: outreach should only reference professional work. X and YouTube stay
+#   in, because engineers often post talks and announcements there.
+DEFAULT_EXCLUDED = ["linkedin.com", "instagram.com", "facebook.com", "tiktok.com", "threads.net",
+                    "pinterest.com", "snapchat.com"]
+
+
+def is_excluded(url: str) -> bool:
+    host = urlparse(url if "//" in url else f"//{url}").netloc.lower().split(":")[0]
+    return any(host == d or host.endswith("." + d) for d in DEFAULT_EXCLUDED)
 
 MAX_PAGE_CHARS = 6000  # keep page text short enough for the model
 
@@ -104,7 +113,7 @@ async def web_search(
             Put a person's name in quotes to avoid results about other people.
         max_results: How many results (1-10).
         include_domains: Comma-separated sites to search only, e.g. "github.com,medium.com".
-        exclude_domains: Comma-separated sites to skip (linkedin.com is always skipped).
+        exclude_domains: Comma-separated sites to skip (LinkedIn and personal social media are always skipped).
         time_range: Only recent results: "week", "month" or "year". Empty = any time.
         news: True to search news articles instead of the general web.
 
@@ -135,7 +144,7 @@ async def web_search(
         "url": r.get("url"),
         "snippet": (r.get("content") or "")[:500],
         "published_date": r.get("published_date"),
-    } for r in data.get("results", [])]
+    } for r in data.get("results", []) if not is_excluded(r.get("url", ""))]
     output = {"query": query, "count": len(results), "results": results}
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -151,8 +160,8 @@ async def read_page(url: str) -> dict:
     Args:
         url: The full page address, starting with https://
     """
-    if "linkedin.com" in url:
-        return {"error": "LinkedIn pages aren't read automatically. Open this one yourself."}
+    if is_excluded(url):
+        return {"error": "LinkedIn and personal social media pages aren't read automatically. Open this one yourself."}
 
     body = {"urls": [url], "extract_depth": "basic", "format": "markdown"}
     path, hit = cached("page", body)

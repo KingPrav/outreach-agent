@@ -56,7 +56,7 @@ graph TD
 | Component | Role |
 |---|---|
 | `servers/people_server.py` | MCP server over Hunter.io: people, emails, verification. Results cached 7 days |
-| `servers/research_server.py` | MCP server over Tavily: web search and page reading, LinkedIn excluded |
+| `servers/research_server.py` | MCP server over Tavily: web search and page reading. LinkedIn and personal social media (Instagram, Facebook, TikTok, Threads, Pinterest, Snapchat) are never searched or read |
 | `outreach_agent/graph.py` | The graph. Depends only on small `StructuredLLM` and `Tools` interfaces, so it runs against fakes in tests |
 | `outreach_agent/checks.py` | Free deterministic checks: length limits, placeholders, stock phrases, wrong recipient or company |
 | `outreach_agent/runtime.py` | Opens both MCP servers, the model client and the SQLite checkpointer for a run |
@@ -98,7 +98,7 @@ python -m evals.run_checker_eval --repeats 3      # with the model; also measure
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-python -m pytest -q                      # 46 offline tests: fake model and MCP servers, no keys
+python -m pytest -q                      # 55 offline tests: fake model and MCP servers, no keys
 cp .env.example .env                     # OpenAI, Hunter.io and Tavily keys
 ```
 
