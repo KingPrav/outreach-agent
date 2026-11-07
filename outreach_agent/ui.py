@@ -10,6 +10,8 @@ or the command line.
 """
 
 import csv
+import html
+from urllib.parse import quote, urlencode
 from contextlib import AbstractAsyncContextManager
 from typing import Callable
 
@@ -85,6 +87,43 @@ def draft_fields(result: dict, name: str) -> tuple[str, str, str, str]:
     return note, d.get("email_subject", ""), d.get("email_body", ""), "\n\n".join(sections)
 
 
+GMAIL_COMPOSE = "https://mail.google.com/mail/"
+
+
+def gmail_compose_url(to: str, subject: str, body: str, account: str = "") -> str:
+    """A Gmail link that opens a filled-in compose window. Gmail never sends from a link: you press Send."""
+    params = {"view": "cm", "fs": "1", "to": to, "su": subject, "body": body}
+    if account:
+        params["authuser"] = account          # which signed-in Google account to open
+    return GMAIL_COMPOSE + "?" + urlencode(params, quote_via=quote)
+
+
+def compose_button(result: dict, name: str | None, subject: str, body: str, account: str = "") -> str:
+    """HTML for the 'Open in Gmail' button, or the reason it isn't available.
+    A draft the checker still flags stays locked until its subject or body has been edited."""
+    if not name:
+        return ""
+    person = next((p for p in result.get("selected", []) if p["name"] == name), {})
+    if not person.get("email"):
+        return f"<p>No email address found for {html.escape(name)}. Copy the message instead.</p>"
+    draft = result.get("drafts", {}).get(name, {})
+    flagged = result.get("feedback", {}).get(name)
+    edited = (subject, body) != (draft.get("email_subject", ""), draft.get("email_body", ""))
+    if flagged and not edited:
+        return ("<p><b>Gmail is locked for this draft:</b> the checker still flags it (see the right column). "
+                "Edit the subject or email to fix those points and the button appears.</p>")
+    notes = []
+    if flagged:
+        notes.append("You edited a flagged draft. Reread it before sending.")
+    if person.get("email_status") != "valid":
+        notes.append(f"This address is {html.escape(person.get('email_status') or 'unverified')}, so it may bounce.")
+    url = html.escape(gmail_compose_url(person["email"], subject, body, account), quote=True)
+    link = (f'<a href="{url}" target="_blank" rel="noopener noreferrer" '
+            'style="display:inline-block;padding:10px 18px;border-radius:8px;background:#ea4335;color:#fff;'
+            'font-weight:600;text-decoration:none">Open in Gmail (opens a draft, does not send)</a>')
+    return link + "".join(f"<p>{n}</p>" for n in notes)
+
+
 def tracker_rows(settings: Settings) -> list[list[str]]:
     path = settings.outputs / "tracker.csv"
     if not path.exists():
@@ -136,11 +175,18 @@ def build_app(runner: OutreachRunner):
         first = names[0] if names else None
         fields = draft_fields(result, first) if first else ("", "", "", "")
         report = result.get("report_path")
+        gmail = compose_button(result, first, fields[1], fields[2], runner.settings.gmail_account)
         return (status, gr.Column(visible=bool(names)), gr.Dropdown(choices=names, value=first), *fields,
-                report, tracker_rows(runner.settings), {**session, "result": result})
+                gmail, report, tracker_rows(runner.settings), {**session, "result": result})
 
     def on_pick(name, session):
-        return draft_fields((session or {}).get("result", {}), name) if name else ("", "", "", "")
+        result = (session or {}).get("result", {})
+        fields = draft_fields(result, name) if name else ("", "", "", "")
+        return (*fields, compose_button(result, name, fields[1], fields[2], runner.settings.gmail_account))
+
+    def on_edit(name, subject_text, body_text, session):
+        return compose_button((session or {}).get("result", {}), name, subject_text, body_text,
+                              runner.settings.gmail_account)
 
     with gr.Blocks(title="Outreach Agent") as app:
         gr.Markdown("# Outreach Agent\nFinds the right people, researches them, and drafts fact-checked "
@@ -169,9 +215,10 @@ def build_app(runner: OutreachRunner):
                         note = gr.Textbox(label="LinkedIn note", lines=3, buttons=["copy"])
                         subject = gr.Textbox(label="Email subject", buttons=["copy"])
                         body = gr.Textbox(label="Email", lines=10, buttons=["copy"])
+                        gmail = gr.HTML()
                     with gr.Column(scale=2):
                         notes = gr.Markdown()
-                gr.Markdown("Edits here are for copying; they are not saved back to the report.")
+                gr.Markdown("Edits here go into the Gmail draft and the copy buttons; they are not saved back to the report.")
                 report = gr.File(label="Full report (Markdown)")
 
         with gr.Tab("Tracker"):
@@ -182,8 +229,10 @@ def build_app(runner: OutreachRunner):
         find.click(on_find, [company, role, job_url, domain], [status, picks, draft, session])
         load.click(on_load, [run_id], [status, picks, draft, session])
         draft.click(on_draft, [picks, session],
-                    [status, drafts_box, contact, note, subject, body, notes, report, tracker, session])
-        contact.change(on_pick, [contact, session], [note, subject, body, notes])
+                    [status, drafts_box, contact, note, subject, body, notes, gmail, report, tracker, session])
+        contact.change(on_pick, [contact, session], [note, subject, body, notes, gmail])
+        subject.change(on_edit, [contact, subject, body, session], [gmail])
+        body.change(on_edit, [contact, subject, body, session], [gmail])
     return app
 
 

@@ -14,13 +14,19 @@ For each candidate, choose a category:
 Prefer people whose title matches the role's area (e.g. ML roles -> ML/AI engineering leaders).
 Return at most {max_people} non-skip picks, best first."""
 
-PERSON_PROMPT = """From these web search results, find up to 3 specific, PROFESSIONAL hooks about {name}
-({position} at {company}) that a job seeker could mention in a short message: talks, blog posts,
-podcasts, open-source work, launches they led, interviews.
-Rules:
-- Only use results that are clearly about THIS person at THIS company. Same-name strangers are common.
-- Nothing personal (family, health, location, politics, hobbies). Professional work only.
-- Every hook must cite a URL from the results. If nothing reliable is found, return no hooks."""
+PERSON_PROMPT = """From these web search results, find up to 3 hooks about {name} ({position} at {company})
+that a job seeker could mention in a short message.
+
+A hook is a specific, checkable piece of their professional work: a talk, blog post, podcast episode,
+open-source repository, paper or launch they led. It must have a name or title, and you must copy that
+title word for word from the result into `artifact`.
+
+Not hooks (return nothing for these): job descriptions or responsibilities ("oversees engineering",
+"focuses on AI solutions"), vague activity ("participated in discussions", "is involved in"), company
+news that doesn't name this person, and anything personal (family, health, location, politics, hobbies).
+
+Only use results clearly about THIS person at THIS company; same-name strangers are common.
+Fewer hooks is better than weak ones. If nothing qualifies, return no hooks."""
 
 ROLE_PROMPT = """Summarize what a candidate should know about the "{role}" role at {company}, from the
 material below (a job posting and/or search results). Only use facts in the material, and put the
@@ -34,6 +40,9 @@ Rules:
   experience, numbers, mutual connections or familiarity ("I've followed your work for years").
 - Open with ONE specific hook about the person or their team (from the research). If there are no
   hooks, use a specific fact about the team or role instead. Never pretend to know them.
+- Refer to a hook by naming it (e.g. your post "Title"). Don't claim you watched, attended, noticed
+  or were struck by it, and don't describe it beyond what the research says.
+- Describe the candidate's work exactly as the profile does. No intensifiers ("deeply", "extensively").
 - Connect it to ONE or TWO relevant points from the candidate's resume, matched to the role.
 - End with ONE small, clear ask:
     recruiter -> whether they're the right person for the {role} role, or a short chat about fit;

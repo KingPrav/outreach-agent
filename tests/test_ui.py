@@ -61,3 +61,42 @@ def test_app_builds(runner):
 
     app = build_app(runner)
     assert app.title == "Outreach Agent"
+
+
+def test_gmail_url_encodes_everything():
+    from urllib.parse import parse_qs, urlparse
+
+    from outreach_agent.ui import gmail_compose_url
+
+    url = gmail_compose_url("a@b.dev", "Hi & welcome", "Line one\n\nLine two: 100% sure?", "me@gmail.com")
+    q = parse_qs(urlparse(url).query)
+    assert url.startswith("https://mail.google.com/mail/?")
+    assert q == {"view": ["cm"], "fs": ["1"], "to": ["a@b.dev"], "su": ["Hi & welcome"],
+                 "body": ["Line one\n\nLine two: 100% sure?"], "authuser": ["me@gmail.com"]}
+
+
+RESULT = {
+    "selected": [{"name": "Jordan Lee", "email": "jordan@northwind.dev", "email_status": "valid"},
+                 {"name": "Sam Patel", "email": None},
+                 {"name": "Casey Morgan", "email": "casey@northwind.dev", "email_status": "accept_all"}],
+    "drafts": {"Jordan Lee": {"email_subject": "Hello", "email_body": "Body"},
+               "Casey Morgan": {"email_subject": "Hi", "email_body": "Text"}},
+    "feedback": {"Jordan Lee": ["Embellished claim"]},
+}
+
+
+def test_gmail_button_locked_while_flagged_draft_is_unedited():
+    from outreach_agent.ui import compose_button
+
+    assert "locked" in compose_button(RESULT, "Jordan Lee", "Hello", "Body")
+    edited = compose_button(RESULT, "Jordan Lee", "Hello", "Body, fixed")
+    assert "mail.google.com" in edited and "Reread it" in edited and 'target="_blank"' in edited
+
+
+def test_gmail_button_without_email_or_with_unverified_email():
+    from outreach_agent.ui import compose_button
+
+    assert "No email address" in compose_button(RESULT, "Sam Patel", "", "")
+    unverified = compose_button(RESULT, "Casey Morgan", "Hi", "Text")
+    assert "mail.google.com" in unverified and "accept_all" in unverified
+    assert compose_button(RESULT, None, "", "") == ""

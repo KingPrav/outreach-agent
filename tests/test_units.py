@@ -73,3 +73,20 @@ def test_tracker_header_written_once(tmp_path):
     lines = (tmp_path / "tracker.csv").read_text().splitlines()
     assert lines[0].startswith("date,") and len(lines) == 3
     assert path.name == "2026-11-07_northwind_ai-engineer.md"
+
+
+def test_grounded_hooks_need_the_artifact_in_the_cited_result():
+    from outreach_agent.graph import grounded_hooks
+    from outreach_agent.schemas import Hook, PersonResearch
+
+    results = [{"url": "https://a.dev/post", "title": "Regression Testing for LLM Agents", "snippet": "A post by Jordan"},
+               {"url": "https://b.dev/team", "title": "Our team", "snippet": "Jordan oversees engineering"}]
+    hooks = [
+        Hook(artifact="regression testing for LLM agents", fact="Wrote the post", source_url="https://a.dev/post"),
+        Hook(artifact="Regression Testing for LLM Agents", fact="Cited the wrong result", source_url="https://b.dev/team"),
+        Hook(artifact="oversees engineering", fact="Oversees engineering", source_url="https://c.dev/nowhere"),
+        Hook(artifact="AI", fact="Too short to verify", source_url="https://a.dev/post"),
+    ]
+    found = PersonResearch(same_person_confident=True, hooks=hooks, summary="")
+    assert [h["fact"] for h in grounded_hooks(found, results)] == ["Wrote the post"]
+    assert grounded_hooks(found.model_copy(update={"same_person_confident": False}), results) == []

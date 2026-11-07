@@ -51,8 +51,10 @@ class Shortlist(BaseModel):
 
 
 class Hook(BaseModel):
-    fact: str = Field(description="One specific, professional fact about the person, e.g. a talk or post")
-    source_url: str = Field(description="The URL the fact came from (must be one of the search results)")
+    artifact: str = Field(description="The exact title or name of the talk, post, podcast episode, repository or "
+                                      "launch, copied word for word from the search result's title or snippet")
+    fact: str = Field(description="One sentence: what the person did with that artifact, e.g. 'Wrote the post \"X\"'")
+    source_url: str = Field(description="The URL of the search result the artifact appears in")
 
 
 class PersonResearch(BaseModel):

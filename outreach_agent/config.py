@@ -22,6 +22,7 @@ class Settings:
     notes_path: Path = ROOT / "profile" / "notes.md"
     max_people: int = int(os.getenv("MAX_PEOPLE", "6"))
     outputs: Path = ROOT / "outputs"
+    gmail_account: str = os.getenv("GMAIL_ACCOUNT", "")   # which signed-in Google account Gmail links open
 
     @property
     def cache_dir(self) -> Path:

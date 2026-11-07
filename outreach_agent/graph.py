@@ -9,6 +9,7 @@
 import asyncio
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from langgraph.graph import END, START, StateGraph
@@ -34,6 +35,24 @@ def read_resume(path: Path) -> str:
         from pypdf import PdfReader
         return "\n".join(page.extract_text() or "" for page in PdfReader(path).pages)
     return path.read_text()
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.sub(r"[^\w]+", " ", text.lower()).split())
+
+
+def grounded_hooks(found: PersonResearch, results: list[dict]) -> list[dict]:
+    """Keep a hook only if the model is sure it found the right person, the cited URL was actually
+    retrieved, and the artifact's title appears in that result's title or snippet."""
+    if not found.same_person_confident:
+        return []
+    text_by_url = {r["url"]: _norm(f'{r.get("title", "")} {r.get("snippet", "")}') for r in results}
+    kept = []
+    for h in found.hooks:
+        artifact = _norm(h.artifact)
+        if h.source_url in text_by_url and len(artifact) >= 3 and artifact in text_by_url[h.source_url]:
+            kept.append(h.model_dump())
+    return kept
 
 
 def build_graph(people: Tools, research: Tools, llm: StructuredLLM, settings: Settings,
@@ -143,10 +162,7 @@ def build_graph(people: Tools, research: Tools, llm: StructuredLLM, settings: Se
             {"role": "system", "content": prompts.PERSON_PROMPT.format(
                 name=p["name"], position=p.get("position"), company=company)},
             {"role": "user", "content": json.dumps(results)}], PersonResearch)
-        # A hook must cite a URL we actually retrieved, and only if the model is sure it's the same person.
-        valid_urls = {r["url"] for r in results}
-        hooks = ([h.model_dump() for h in found.hooks if h.source_url in valid_urls]
-                 if found.same_person_confident else [])
+        hooks = grounded_hooks(found, results)
         log(f"  [research_person] {p['name']}: {len(hooks)} hook(s)")
         return {"research": [{"name": p["name"], "hooks": hooks, "summary": found.summary}]}
 

@@ -56,8 +56,9 @@ class FakeLLM:
             results = json.loads(user)
             return PersonResearch(
                 same_person_confident=name not in self.unconfident,
-                hooks=[Hook(fact="Spoke about eval tooling", source_url=results[0]["url"]),
-                       Hook(fact="Invented fact", source_url="https://not-in-results.example")],
+                hooks=[Hook(artifact="eval tooling", fact="Spoke about eval tooling", source_url=results[0]["url"]),
+                       Hook(artifact="eval tooling", fact="Invented fact", source_url="https://not-in-results.example"),
+                       Hook(artifact="Keynote at NeurIPS", fact="Unsupported title", source_url=results[0]["url"])],
                 summary="Leads the ML platform team")
         if schema is RoleBrief:
             return RoleBrief(summary="Builds agents.", key_requirements=["Python"],

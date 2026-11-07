@@ -31,7 +31,9 @@ python -m outreach_agent.ui        # http://127.0.0.1:7860
 ```
 
 Find people, tick who to contact, then review each draft with the research and sources it used,
-copy buttons, and the LinkedIn character count. Runs are checkpointed, so a paused review can be
+copy buttons, and the LinkedIn character count. **Open in Gmail** opens a filled-in compose window in
+a new tab (recipient, subject and your edited text); you press Send. It stays locked for a draft the
+checker still flags until you edit it. Set `GMAIL_ACCOUNT` if you're signed in to several Google accounts. Runs are checkpointed, so a paused review can be
 picked up later from the UI or the command line. The screenshot uses the test fakes (fictional people).
 
 ![Outreach Agent UI](docs/ui.png)
@@ -66,8 +68,8 @@ graph TD
   state is checkpointed in SQLite, so a paused review survives closing the terminal
   (`--resume <run id>`).
 - **Grounding is enforced in code, not just asked for in the prompt.** A hook about a person is kept
-  only if its source URL was among the search results actually retrieved and the model says it is
-  confident the results are about that person.
+  only if the model is confident the results are about that person, its source URL was actually
+  retrieved, and the named artifact (talk, post, repository) appears in that result's title or snippet.
 - **Two layer checking.** Deterministic rules run first (free), then a model review compares every
   claim with the resume, the research and the role brief. Only failing drafts are redrafted, once.
 - **Graceful degradation.** If Hunter can't resolve the company name, ranked fallback domains are tried;
@@ -96,7 +98,7 @@ python -m evals.run_checker_eval --repeats 3      # with the model; also measure
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-python -m pytest -q                      # 42 offline tests: fake model and MCP servers, no keys
+python -m pytest -q                      # 46 offline tests: fake model and MCP servers, no keys
 cp .env.example .env                     # OpenAI, Hunter.io and Tavily keys
 ```
 
