@@ -31,7 +31,7 @@ python -m outreach_agent.ui        # http://127.0.0.1:7860
 ```
 
 Find people, tick who to contact, then review each draft with the research and sources it used,
-copy buttons, and the LinkedIn character count. **Open in Gmail** opens a filled-in compose window in
+copy buttons, and a live LinkedIn character count. **Every message is editable:** your changes stay when you switch between people, "Undo my edits" restores the agent's draft, and "Save my edits" writes them to the report, marked as edited. **Open in Gmail** opens a filled-in compose window in
 a new tab (recipient, subject and your edited text); you press Send. It stays locked for a draft the
 checker still flags until you edit it. Set `GMAIL_ACCOUNT` if you're signed in to several Google accounts. Runs are checkpointed, so a paused review can be
 picked up later from the UI or the command line. The screenshot uses the test fakes (fictional people).
@@ -98,7 +98,7 @@ python -m evals.run_checker_eval --repeats 3      # with the model; also measure
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-python -m pytest -q                      # 55 offline tests: fake model and MCP servers, no keys
+python -m pytest -q                      # 56 offline tests: fake model and MCP servers, no keys
 cp .env.example .env                     # OpenAI, Hunter.io and Tavily keys
 ```
 
@@ -119,5 +119,4 @@ about 14 Tavily searches, and about 20 small model calls (a few cents).
 
 - Record reply rates in `tracker.csv` and report them per message style.
 - Draft follow-ups after 5 to 7 days with no reply.
-- Save edits made in the UI back to the report.
 - A second people source for companies Hunter knows little about.

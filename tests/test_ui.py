@@ -100,3 +100,31 @@ def test_gmail_button_without_email_or_with_unverified_email():
     unverified = compose_button(RESULT, "Casey Morgan", "Hi", "Text")
     assert "mail.google.com" in unverified and "accept_all" in unverified
     assert compose_button(RESULT, None, "", "") == ""
+
+
+def test_edits_override_the_draft_and_are_marked_when_saved(tmp_path):
+    from outreach_agent.report import rewrite_report
+    from outreach_agent.ui import apply_edits, current_text, draft_fields, note_counter
+
+    result = {"company": "Northwind", "role": "AI Engineer", "research": [],
+              "selected": [{"name": "Jordan Lee", "position": "EM", "category": "engineering_manager"},
+                           {"name": "Sam Patel", "position": "Recruiter", "category": "recruiter"}],
+              "drafts": {"Jordan Lee": {"linkedin_note": "AI note", "email_subject": "AI subject", "email_body": "AI body"},
+                         "Sam Patel": {"linkedin_note": "Sam note", "email_subject": "S", "email_body": "Sam body"}}}
+    edits = {"Jordan Lee": {"linkedin_note": "My note", "email_subject": "AI subject", "email_body": "My body"}}
+
+    assert current_text(result, edits, "Jordan Lee")["email_body"] == "My body"
+    assert current_text(result, edits, "Sam Patel")["email_body"] == "Sam body"
+    assert draft_fields(result, "Jordan Lee", edits)[0] == "My note"
+
+    saved = apply_edits(result, edits)
+    assert saved["drafts"]["Jordan Lee"]["edited"] and "edited" not in saved["drafts"]["Sam Patel"]
+    assert result["drafts"]["Jordan Lee"]["email_body"] == "AI body"      # the agent's draft is untouched
+
+    path = rewrite_report(saved, tmp_path / "report.md")
+    text = path.read_text()
+    assert "My body" in text and "AI body" not in text and text.count("_Edited by you._") == 1
+    assert not (tmp_path / "tracker.csv").exists()                         # saving never adds tracker rows
+
+    assert note_counter("x" * 10) == "10/300 characters"
+    assert "cut it off" in note_counter("x" * 301)

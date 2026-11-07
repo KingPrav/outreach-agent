@@ -11,6 +11,7 @@ or the command line.
 
 import csv
 import html
+from pathlib import Path
 from urllib.parse import quote, urlencode
 from contextlib import AbstractAsyncContextManager
 from typing import Callable
@@ -69,16 +70,38 @@ class OutreachRunner:
         return {"result": result, "logs": logs}
 
 
-def draft_fields(result: dict, name: str) -> tuple[str, str, str, str]:
+EDIT_KEYS = ("linkedin_note", "email_subject", "email_body")
+
+
+def current_text(result: dict, edits: dict, name: str) -> dict:
+    """The text to show for a contact: your edits if you made any, otherwise the agent's draft."""
+    draft = result.get("drafts", {}).get(name, {})
+    return {k: edits.get(name, {}).get(k, draft.get(k, "")) for k in EDIT_KEYS}
+
+
+def note_counter(note: str) -> str:
+    n = len(note or "")
+    return f"{n}/{LINKEDIN_NOTE_LIMIT} characters" + (" (LinkedIn will cut it off)" if n > LINKEDIN_NOTE_LIMIT else "")
+
+
+def apply_edits(result: dict, edits: dict) -> dict:
+    """A copy of the result with your edited text in the drafts, marked as edited."""
+    drafts = {name: dict(d) for name, d in result.get("drafts", {}).items()}
+    for name, changed in edits.items():
+        if name in drafts and any(drafts[name].get(k) != v for k, v in changed.items()):
+            drafts[name].update(changed, edited=True)
+    return {**result, "drafts": drafts}
+
+
+def draft_fields(result: dict, name: str, edits: dict | None = None) -> tuple[str, str, str, str]:
     """(LinkedIn note, subject, email body, notes markdown) for one contact."""
-    d = result.get("drafts", {}).get(name, {})
+    d = current_text(result, edits or {}, name)
     research = next((r for r in result.get("research", []) if r["name"] == name), {})
     person = next((p for p in result.get("selected", []) if p["name"] == name), {})
     note = d.get("linkedin_note", "")
     sections = [f"**Email:** {person.get('email') or 'not found'} ({person.get('email_status') or 'unverified'})"]
     if person.get("linkedin"):
         sections.append(f"**LinkedIn:** {person['linkedin']}")
-    sections.append(f"**LinkedIn note length:** {len(note)}/{LINKEDIN_NOTE_LIMIT} characters")
     hooks = [f"- {h['fact']} ([source]({h['source_url']}))" for h in research.get("hooks", [])]
     sections.append("**Research used:**\n" + ("\n".join(hooks) or "- Nothing specific found; the message is based on the role and team."))
     flagged = result.get("feedback", {}).get(name)
@@ -135,7 +158,7 @@ def tracker_rows(settings: Settings) -> list[list[str]]:
 def build_app(runner: OutreachRunner):
     import gradio as gr
 
-    from .report import TRACKER_FIELDS
+    from .report import TRACKER_FIELDS, rewrite_report
 
     async def on_find(company, role, job_url, domain):
         try:
@@ -174,19 +197,47 @@ def build_app(runner: OutreachRunner):
         status = "\n".join(out["logs"]) or "Nothing selected, nothing drafted."
         first = names[0] if names else None
         fields = draft_fields(result, first) if first else ("", "", "", "")
-        report = result.get("report_path")
         gmail = compose_button(result, first, fields[1], fields[2], runner.settings.gmail_account)
+        # session["result"] keeps the agent's drafts untouched; your changes live in session["edits"].
         return (status, gr.Column(visible=bool(names)), gr.Dropdown(choices=names, value=first), *fields,
-                gmail, report, tracker_rows(runner.settings), {**session, "result": result})
+                note_counter(fields[0]), gmail, result.get("report_path"), tracker_rows(runner.settings),
+                {**session, "result": result, "edits": {}}, "")
 
     def on_pick(name, session):
-        result = (session or {}).get("result", {})
-        fields = draft_fields(result, name) if name else ("", "", "", "")
-        return (*fields, compose_button(result, name, fields[1], fields[2], runner.settings.gmail_account))
+        session = session or {}
+        result, edits = session.get("result", {}), session.get("edits", {})
+        fields = draft_fields(result, name, edits) if name else ("", "", "", "")
+        return (*fields, note_counter(fields[0]),
+                compose_button(result, name, fields[1], fields[2], runner.settings.gmail_account))
 
-    def on_edit(name, subject_text, body_text, session):
-        return compose_button((session or {}).get("result", {}), name, subject_text, body_text,
-                              runner.settings.gmail_account)
+    def on_edit(name, note_text, subject_text, body_text, session):
+        session = dict(session or {})
+        result = session.get("result", {})
+        if name:
+            edits = dict(session.get("edits", {}))
+            draft = {k: result.get("drafts", {}).get(name, {}).get(k, "") for k in EDIT_KEYS}
+            typed = {"linkedin_note": note_text, "email_subject": subject_text, "email_body": body_text}
+            if typed == draft:
+                edits.pop(name, None)
+            else:
+                edits[name] = typed
+            session["edits"] = edits
+        gmail = compose_button(result, name, subject_text, body_text, runner.settings.gmail_account)
+        return note_counter(note_text), gmail, session
+
+    def on_reset(name, session):
+        session = dict(session or {})
+        session["edits"] = {k: v for k, v in session.get("edits", {}).items() if k != name}
+        return (*on_pick(name, session), session)
+
+    def on_save(session):
+        session = session or {}
+        result, edits = session.get("result", {}), session.get("edits", {})
+        if not result.get("report_path"):
+            raise gr.Error("Nothing to save yet.")
+        path = rewrite_report(apply_edits(result, edits), Path(result["report_path"]))
+        who = ", ".join(sorted(edits)) or "no one (nothing was changed)"
+        return str(path), f"Saved. Edited drafts in the report: {who}."
 
     with gr.Blocks(title="Outreach Agent") as app:
         gr.Markdown("# Outreach Agent\nFinds the right people, researches them, and drafts fact-checked "
@@ -210,15 +261,21 @@ def build_app(runner: OutreachRunner):
 
             with gr.Column(visible=False) as drafts_box:
                 contact = gr.Dropdown(label="Drafts")
+                gr.Markdown("**Edit freely.** Your changes are kept when you switch between people, go into the "
+                            "Gmail draft and the copy buttons, and are written to the report when you save.")
                 with gr.Row():
                     with gr.Column(scale=3):
-                        note = gr.Textbox(label="LinkedIn note", lines=3, buttons=["copy"])
-                        subject = gr.Textbox(label="Email subject", buttons=["copy"])
-                        body = gr.Textbox(label="Email", lines=10, buttons=["copy"])
+                        note = gr.Textbox(label="LinkedIn note", lines=3, interactive=True, buttons=["copy"])
+                        counter = gr.Markdown()
+                        subject = gr.Textbox(label="Email subject", interactive=True, buttons=["copy"])
+                        body = gr.Textbox(label="Email", lines=10, interactive=True, buttons=["copy"])
                         gmail = gr.HTML()
+                        with gr.Row():
+                            save = gr.Button("Save my edits to the report")
+                            reset = gr.Button("Undo my edits for this person", variant="secondary")
+                        saved = gr.Markdown()
                     with gr.Column(scale=2):
                         notes = gr.Markdown()
-                gr.Markdown("Edits here go into the Gmail draft and the copy buttons; they are not saved back to the report.")
                 report = gr.File(label="Full report (Markdown)")
 
         with gr.Tab("Tracker"):
@@ -228,11 +285,13 @@ def build_app(runner: OutreachRunner):
 
         find.click(on_find, [company, role, job_url, domain], [status, picks, draft, session])
         load.click(on_load, [run_id], [status, picks, draft, session])
-        draft.click(on_draft, [picks, session],
-                    [status, drafts_box, contact, note, subject, body, notes, gmail, report, tracker, session])
-        contact.change(on_pick, [contact, session], [note, subject, body, notes, gmail])
-        subject.change(on_edit, [contact, subject, body, session], [gmail])
-        body.change(on_edit, [contact, subject, body, session], [gmail])
+        draft.click(on_draft, [picks, session], [status, drafts_box, contact, note, subject, body, notes,
+                                                 counter, gmail, report, tracker, session, saved])
+        contact.change(on_pick, [contact, session], [note, subject, body, notes, counter, gmail])
+        for box in (note, subject, body):      # .input fires only when you type, not when we fill the boxes
+            box.input(on_edit, [contact, note, subject, body, session], [counter, gmail, session])
+        reset.click(on_reset, [contact, session], [note, subject, body, notes, counter, gmail, session])
+        save.click(on_save, [session], [report, saved])
     return app
 
 
