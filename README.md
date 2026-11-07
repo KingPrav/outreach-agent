@@ -23,6 +23,19 @@ Who should I research and draft for? 1,2
   [save] outputs/2026-11-07_northwind_ai-engineer.md and outputs/tracker.csv
 ```
 
+## Web UI
+
+```bash
+pip install -e ".[ui]"
+python -m outreach_agent.ui        # http://127.0.0.1:7860
+```
+
+Find people, tick who to contact, then review each draft with the research and sources it used,
+copy buttons, and the LinkedIn character count. Runs are checkpointed, so a paused review can be
+picked up later from the UI or the command line. The screenshot uses the test fakes (fictional people).
+
+![Outreach Agent UI](docs/ui.png)
+
 ## Architecture
 
 ```mermaid
@@ -44,7 +57,8 @@ graph TD
 | `servers/research_server.py` | MCP server over Tavily: web search and page reading, LinkedIn excluded |
 | `outreach_agent/graph.py` | The graph. Depends only on small `StructuredLLM` and `Tools` interfaces, so it runs against fakes in tests |
 | `outreach_agent/checks.py` | Free deterministic checks: length limits, placeholders, stock phrases, wrong recipient or company |
-| `outreach_agent/cli.py` | Starts both MCP servers, handles the review pause, persists runs in SQLite |
+| `outreach_agent/runtime.py` | Opens both MCP servers, the model client and the SQLite checkpointer for a run |
+| `outreach_agent/cli.py`, `ui.py` | Command line and Gradio front ends over the same graph |
 
 ## Design decisions
 
@@ -82,7 +96,7 @@ python -m evals.run_checker_eval --repeats 3      # with the model; also measure
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-python -m pytest -q                      # 36 offline tests: fake model and MCP servers, no keys
+python -m pytest -q                      # 42 offline tests: fake model and MCP servers, no keys
 cp .env.example .env                     # OpenAI, Hunter.io and Tavily keys
 ```
 
@@ -103,4 +117,5 @@ about 14 Tavily searches, and about 20 small model calls (a few cents).
 
 - Record reply rates in `tracker.csv` and report them per message style.
 - Draft follow-ups after 5 to 7 days with no reply.
+- Save edits made in the UI back to the report.
 - A second people source for companies Hunter knows little about.

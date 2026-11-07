@@ -19,9 +19,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+ui = ["gradio>=5"]
 
 [project.scripts]
 outreach-agent = "outreach_agent.cli:main"
+outreach-agent-ui = "outreach_agent.ui:main"
 
 [tool.setuptools]
 packages = ["outreach_agent"]

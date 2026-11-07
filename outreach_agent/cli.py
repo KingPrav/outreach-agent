@@ -9,17 +9,19 @@ import argparse
 import asyncio
 import re
 import sys
-from contextlib import AsyncExitStack
 from datetime import datetime
 
 from langgraph.types import Command
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 
-from .clients import AgentError, MCPTools, OpenAIStructured
-from .config import ROOT, Settings
+from .clients import AgentError
+from .config import Settings
 from .domains import slug
 from .graph import build_graph
+from .runtime import open_services
+
+
+def new_run_id(company: str, role: str) -> str:
+    return f"{slug(company)}-{slug(role)}-{datetime.now():%Y%m%d-%H%M%S}"
 
 
 def show_shortlist(info: dict) -> None:
@@ -40,24 +42,9 @@ def parse_selection(raw: str, count: int) -> list[int]:
 
 
 async def run(args: argparse.Namespace) -> None:
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-    from openai import AsyncOpenAI
-
     settings = Settings()
-    settings.checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
-    servers = {name: StdioServerParameters(command=sys.executable, args=[str(ROOT / "servers" / f"{name}_server.py")])
-               for name in ("people", "research")}
-
-    async with AsyncExitStack() as stack:
-        sessions = {}
-        for name, params in servers.items():
-            read, write = await stack.enter_async_context(stdio_client(params))
-            sessions[name] = await stack.enter_async_context(ClientSession(read, write))
-            await sessions[name].initialize()
-        checkpointer = await stack.enter_async_context(AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_db)))
-
-        app = build_graph(MCPTools(sessions["people"]), MCPTools(sessions["research"]),
-                          OpenAIStructured(AsyncOpenAI(), settings.model), settings, checkpointer)
+    async with open_services(settings) as svc:
+        app = build_graph(svc.people, svc.research, svc.llm, settings, svc.checkpointer)
 
         if args.resume:
             thread = args.resume
@@ -68,7 +55,7 @@ async def run(args: argparse.Namespace) -> None:
         else:
             company = args.company or input("Company: ").strip()
             role = args.role or input("Role: ").strip()
-            thread = f"{slug(company)}-{slug(role)}-{datetime.now():%Y%m%d-%H%M}"
+            thread = new_run_id(company, role)
             inputs = {"company": company, "role": role, "domain": args.domain or "", "job_url": args.job_url or ""}
             result = await app.ainvoke(inputs, {"configurable": {"thread_id": thread}})
         config = {"configurable": {"thread_id": thread}}
