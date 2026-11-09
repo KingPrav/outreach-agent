@@ -17,6 +17,7 @@ from .clients import AgentError
 from .config import Settings
 from .domains import slug
 from .graph import build_graph
+from .metrics import one_line, summarize
 from .runtime import open_services
 
 
@@ -68,7 +69,8 @@ async def run(args: argparse.Namespace) -> None:
             result = await app.ainvoke(Command(resume=parse_selection(raw, len(info["shortlist"]))), config)
 
         if result.get("report_path"):
-            print(f"\nDone. Open {result['report_path']} to review, edit and send the messages yourself.")
+            print("\n" + one_line(summarize(result.get("metrics", []), settings)))
+            print(f"Done. Open {result['report_path']} to review, edit and send the messages yourself.")
         elif not result.get("shortlist"):
             print("\nNo suitable recruiters or engineering managers found. Try --domain, or a bigger company.")
         else:

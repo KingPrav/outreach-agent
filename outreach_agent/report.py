@@ -34,11 +34,15 @@ def render_markdown(state: dict, today: date) -> str:
     return "\n".join(lines)
 
 
-def write_report(state: dict, outputs: Path, today: date | None = None) -> Path:
+def write_report(state: dict, outputs: Path, today: date | None = None, stats: dict | None = None) -> Path:
     today = today or date.today()
     outputs.mkdir(parents=True, exist_ok=True)
     path = outputs / f"{today}_{slug(state['company'])}_{slug(state['role'])}.md"
-    path.write_text(render_markdown(state, today))
+    text = render_markdown(state, today)
+    if stats:
+        from .metrics import to_markdown
+        text += "\n" + to_markdown(stats) + "\n"
+    path.write_text(text)
 
     tracker = outputs / "tracker.csv"
     new = not tracker.exists()
@@ -53,6 +57,9 @@ def write_report(state: dict, outputs: Path, today: date | None = None) -> Path:
 
 
 def rewrite_report(state: dict, path: Path, today: date | None = None) -> Path:
-    """Re-render an existing report (e.g. after you edit drafts) without touching the tracker."""
-    path.write_text(render_markdown(state, today or date.today()))
+    """Re-render an existing report (e.g. after you edit drafts) without touching the tracker.
+    Keeps the run stats section that the first write appended."""
+    old = path.read_text() if path.exists() else ""
+    stats = old[old.index("## Run stats"):] if "## Run stats" in old else ""
+    path.write_text(render_markdown(state, today or date.today()) + ("\n" + stats if stats else ""))
     return path

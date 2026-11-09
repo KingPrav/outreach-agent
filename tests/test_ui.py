@@ -128,3 +128,12 @@ def test_edits_override_the_draft_and_are_marked_when_saved(tmp_path):
 
     assert note_counter("x" * 10) == "10/300 characters"
     assert "cut it off" in note_counter("x" * 301)
+
+
+async def test_status_shows_run_stats_after_drafting(runner):
+    from outreach_agent.metrics import one_line, summarize
+
+    found = await runner.start("Northwind", "AI Engineer")
+    result = (await runner.approve(found["run_id"], [0]))["result"]
+    line = one_line(summarize(result["metrics"], runner.settings))
+    assert line.startswith("Wait after approval:") and "model calls" in line

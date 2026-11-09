@@ -3,6 +3,8 @@
 import json
 from collections import Counter
 
+from outreach_agent.clients import record_usage
+
 from outreach_agent.schemas import (CandidateProfile, Draft, FactCheck, Hook, PersonResearch, Pick, RoleBrief,
                                     Shortlist)
 
@@ -38,9 +40,12 @@ class FakeLLM:
         self.unconfident = set(unconfident)
         self.picks = picks
         self.drafted = Counter()
+        self.messages = {}
 
     async def parse(self, messages, schema):
         self.calls[schema.__name__] += 1
+        self.messages.setdefault(schema.__name__, []).append(messages)
+        record_usage(prompt=100, completion=20, cached=40)
         system, user = messages[0]["content"], messages[-1]["content"]
         if schema is CandidateProfile:
             return CandidateProfile(name="Alex Rivera", headline="MS CS student", education=["MS CS"],

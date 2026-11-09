@@ -1,9 +1,15 @@
 """The outreach graph.
 
-    load_profile -> find_domain -> find_people -> shortlist -> review (human)
-        -> research_person (one per contact, parallel) + research_role
-        -> draft -> check --(problems, once)--> draft
-        -> verify_emails -> save
+    START -> load_profile ----------------------------\
+          -> find_people -> shortlist ------------------> review (human)
+          -> research_role ---------------------------/
+    review -> research_person (one per contact) + verify_emails, all in parallel
+           -> draft -> check --(problems, once)--> draft
+           -> save
+
+Everything that doesn't depend on who you pick (your profile, the role research, the people
+lookup) runs in parallel before the review, so the wait after you approve is only the per-person
+work. The trade-off: role research is spent even when no contacts are found.
 """
 
 import asyncio
@@ -20,6 +26,7 @@ from .checks import rule_problems
 from .clients import AgentError, StructuredLLM, Tools
 from .config import EMAIL_WORD_LIMIT, LINKEDIN_NOTE_LIMIT, MAX_REVISIONS, Settings
 from .domains import base_domain, is_company_site, rank_domains
+from .metrics import instrument, summarize
 from .report import write_report
 from .schemas import (CandidateProfile, Draft, FactCheck, PersonResearch, RoleBrief, Shortlist,
                       State)
@@ -72,47 +79,54 @@ def build_graph(people: Tools, research: Tools, llm: StructuredLLM, settings: Se
         log(f"  [load_profile] {profile['name']}: {len(profile['highlights'])} highlights")
         return {"profile": profile}
 
-    async def find_domain(state: State) -> dict:
+    async def fallback_domains(state: State) -> list[str]:
         # Careers sites (joinbytedance.com) often differ from the email domain, so we keep
-        # a few ranked fallbacks rather than trusting one guess.
-        if state.get("domain"):
-            return {"domain_candidates": [base_domain(state["domain"])]}
+        # a few ranked candidates rather than trusting one guess. Costs one search, so it only
+        # runs when Hunter can't resolve the company name.
         found = []
         if state.get("job_url") and is_company_site(base_domain(state["job_url"])):
             found.append(base_domain(state["job_url"]))
         data = await research.call("web_search", {"query": f"{state['company']} official website", "max_results": 8})
         found += [base_domain(r["url"]) for r in data.get("results", [])]
         candidates = rank_domains(state["company"], found)
-        log(f"  [find_domain] fallback domains: {candidates or 'none'}")
-        return {"domain_candidates": candidates}
+        log(f"  [find_people] fallback domains: {candidates or 'none'}")
+        return candidates
+
+    async def lookup(target: dict) -> tuple[dict, str, str]:
+        """Recruiters and engineering leaders at one target, searched concurrently (the free plan
+        caps results at 10 per search, hence two searches). Returns (people, domain, error)."""
+        responses = await asyncio.gather(*(
+            people.call("find_people", {**target, "departments": d, "limit": 10})
+            for d in ("hr", "it,management,research")))
+        found, domain = {}, target.get("domain", "")
+        for data in responses:
+            if "error" in data:
+                if any(code in data["error"] for code in FATAL_PEOPLE_ERRORS):
+                    raise AgentError(f"Hunter: {data['error']}")
+                return {}, domain, data["error"]
+            domain = data.get("domain") or domain
+            for p in data.get("people", []):
+                found.setdefault(p.get("email") or p["name"], p)
+        return found, domain, ""
 
     async def find_people(state: State) -> dict:
-        # Hunter resolves a company name to its email domain better than we can, so try the
-        # name first, then our fallbacks. --domain means: use exactly that.
+        # Hunter resolves a company name to its email domain better than we can, so try the name
+        # first and search for fallback domains only if that finds nobody. --domain means: use exactly that.
         if state.get("domain"):
-            attempts = [{"domain": d} for d in state["domain_candidates"]]
+            targets = [{"domain": base_domain(state["domain"])}]
         else:
-            attempts = [{"company": state["company"]}] + [{"domain": d} for d in state["domain_candidates"]]
-
-        last_error = ""
-        for target in attempts[:3]:
-            found, domain, failed = {}, target.get("domain", ""), False
-            # The free plan caps results at 10 per search, so recruiters and engineering
-            # leaders are searched separately.
-            for departments in ("hr", "it,management,research"):
-                data = await people.call("find_people", {**target, "departments": departments, "limit": 10})
-                if "error" in data:
-                    if any(code in data["error"] for code in FATAL_PEOPLE_ERRORS):
-                        raise AgentError(f"Hunter: {data['error']}")
-                    last_error, failed = data["error"], True
-                    break
-                domain = data.get("domain") or domain
-                for p in data.get("people", []):
-                    found.setdefault(p.get("email") or p["name"], p)
+            targets = [{"company": state["company"]}]
+        tried = 0
+        while targets and tried < 3:
+            target = targets.pop(0)
+            tried += 1
+            found, domain, error = await lookup(target)
             label = target.get("domain") or f"company name '{target['company']}'"
-            log(f"  [find_people] {len(found)} people via {label}" + (f" ({last_error})" if failed else ""))
+            log(f"  [find_people] {len(found)} people via {label}" + (f" ({error})" if error else ""))
             if found:
                 return {"candidates": list(found.values()), "domain": domain}
+            if "company" in target:
+                targets += [{"domain": d} for d in await fallback_domains(state)]
         return {"candidates": [], "domain": state.get("domain", "")}
 
     async def shortlist(state: State) -> dict:
@@ -147,7 +161,7 @@ def build_graph(people: Tools, research: Tools, llm: StructuredLLM, settings: Se
         if not state.get("selected"):
             return END
         jobs = [Send("research_person", {"person": p, "company": state["company"]}) for p in state["selected"]]
-        jobs.append(Send("research_role", state))
+        jobs.append(Send("verify_emails", state))     # only needs the selection, so it overlaps research
         return jobs
 
     async def research_person(job: dict) -> dict:
@@ -167,13 +181,15 @@ def build_graph(people: Tools, research: Tools, llm: StructuredLLM, settings: Se
         return {"research": [{"name": p["name"], "hooks": hooks, "summary": found.summary}]}
 
     async def research_role(state: State) -> dict:
-        material = []
+        calls = [research.call("web_search", {"query": q, "max_results": 5, "time_range": "year"})
+                 for q in (f'{state["company"]} {state["role"]} job', f'{state["company"]} engineering blog')]
         if state.get("job_url"):
-            page = await research.call("read_page", {"url": state["job_url"]})
-            if "text" in page:
-                material.append({"source": state["job_url"], "text": page["text"]})
-        for q in (f'{state["company"]} {state["role"]} job', f'{state["company"]} engineering blog'):
-            data = await research.call("web_search", {"query": q, "max_results": 5, "time_range": "year"})
+            calls.insert(0, research.call("read_page", {"url": state["job_url"]}))
+        responses = await asyncio.gather(*calls)
+        material = []
+        if state.get("job_url") and "text" in responses[0]:
+            material.append({"source": state["job_url"], "text": responses[0]["text"]})
+        for data in responses[1 if state.get("job_url") else 0:]:
             material += [{"source": r["url"], "text": f'{r["title"]}: {r["snippet"]}'} for r in data.get("results", [])]
         brief = await llm.parse([
             {"role": "system", "content": prompts.ROLE_PROMPT.format(role=state["role"], company=state["company"])},
@@ -194,12 +210,14 @@ def build_graph(people: Tools, research: Tools, llm: StructuredLLM, settings: Se
         todo = [p for p in state["selected"] if not drafts or p["name"] in feedback]
 
         async def one(p: dict):
+            # Identical for every person first, person-specific last: OpenAI reuses a cached prompt
+            # prefix across calls, so the N draft calls share the expensive part.
             context = {
-                "recipient": {k: p.get(k) for k in ("name", "position", "category")},
-                "company": state["company"], "role": state["role"],
-                "person_research": research_by_name.get(p["name"], {}),
-                "role_brief": state.get("role_brief", {}),
                 "candidate_profile": state["profile"],
+                "company": state["company"], "role": state["role"],
+                "role_brief": state.get("role_brief", {}),
+                "recipient": {k: p.get(k) for k in ("name", "position", "category")},
+                "person_research": research_by_name.get(p["name"], {}),
             }
             if p["name"] in feedback:
                 context["fix_these_problems_from_last_draft"] = feedback[p["name"]]
@@ -221,10 +239,9 @@ def build_graph(people: Tools, research: Tools, llm: StructuredLLM, settings: Se
             problems = rule_problems(d, recipient_name=name, company=state["company"])
             verdict = await llm.parse([
                 {"role": "system", "content": prompts.CHECK_PROMPT},
-                {"role": "user", "content": json.dumps({
-                    "draft": d, "candidate_profile": state["profile"],
-                    "person_research": research_by_name.get(name, {}),
-                    "role_brief": state.get("role_brief", {})})}], FactCheck)
+                {"role": "user", "content": json.dumps({      # shared context first, as in draft
+                    "candidate_profile": state["profile"], "role_brief": state.get("role_brief", {}),
+                    "person_research": research_by_name.get(name, {}), "draft": d})}], FactCheck)
             return name, problems + verdict.problems
 
         results = await asyncio.gather(*(one(n, d) for n, d in to_check.items()))
@@ -233,7 +250,7 @@ def build_graph(people: Tools, research: Tools, llm: StructuredLLM, settings: Se
         return {"feedback": feedback, "revisions": state.get("revisions", 0) + 1}
 
     def after_check(state: State) -> str:
-        return "draft" if state["feedback"] and state["revisions"] < MAX_REVISIONS else "verify_emails"
+        return "draft" if state["feedback"] and state["revisions"] < MAX_REVISIONS else "save"
 
     async def verify_emails(state: State) -> dict:
         async def one(p: dict) -> dict:
@@ -247,23 +264,22 @@ def build_graph(people: Tools, research: Tools, llm: StructuredLLM, settings: Se
         return {"selected": updated}
 
     def save(state: State) -> dict:
-        path = write_report(state, settings.outputs)
+        path = write_report(state, settings.outputs, stats=summarize(state.get("metrics", []), settings))
         log(f"  [save] {path.relative_to(settings.outputs.parent)} and outputs/tracker.csv")
         return {"report_path": str(path)}
 
     g = StateGraph(State)
-    for fn in (load_profile, find_domain, find_people, shortlist, review, research_person,
-               research_role, draft, check, verify_emails, save):
-        g.add_node(fn.__name__, fn)
-    g.add_edge(START, "load_profile")
-    g.add_edge("load_profile", "find_domain")
-    g.add_edge("find_domain", "find_people")
+    for fn in (load_profile, find_people, shortlist, research_role, research_person, verify_emails,
+               draft, check, save):
+        g.add_node(fn.__name__, instrument(fn.__name__, fn))
+    g.add_node("review", review)        # pauses for you; not timed
+    for first in ("load_profile", "find_people", "research_role"):
+        g.add_edge(START, first)        # independent, so they start together
     g.add_edge("find_people", "shortlist")
-    g.add_edge("shortlist", "review")
-    g.add_conditional_edges("review", fan_out, ["research_person", "research_role", END])
-    g.add_edge(["research_person", "research_role"], "draft")   # waits for every branch
+    g.add_edge(["load_profile", "shortlist", "research_role"], "review")
+    g.add_conditional_edges("review", fan_out, ["research_person", "verify_emails", END])
+    g.add_edge(["research_person", "verify_emails"], "draft")   # waits for every branch
     g.add_edge("draft", "check")
-    g.add_conditional_edges("check", after_check, ["draft", "verify_emails"])
-    g.add_edge("verify_emails", "save")
+    g.add_conditional_edges("check", after_check, ["draft", "save"])
     g.add_edge("save", END)
     return g.compile(checkpointer=checkpointer)

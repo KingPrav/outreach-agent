@@ -5,7 +5,7 @@ import sys
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
-from .clients import MCPTools, OpenAIStructured, StructuredLLM, Tools
+from .clients import TRANSIENT, TRANSIENT_NO_429, MCPTools, OpenAIStructured, StructuredLLM, Tools
 from .config import ROOT, Settings
 
 
@@ -33,5 +33,7 @@ async def open_services(settings: Settings):
             sessions[name] = await stack.enter_async_context(ClientSession(read, write))
             await sessions[name].initialize()
         checkpointer = await stack.enter_async_context(AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_db)))
-        yield Services(MCPTools(sessions["people"]), MCPTools(sessions["research"]),
-                       OpenAIStructured(AsyncOpenAI(), settings.model), checkpointer)
+        # Hunter's 429 means the monthly quota is gone, so it is not retried; Tavily's 429 is a rate limit.
+        yield Services(MCPTools(sessions["people"], retry_on=TRANSIENT_NO_429),
+                       MCPTools(sessions["research"], retry_on=TRANSIENT),
+                       OpenAIStructured(AsyncOpenAI(max_retries=4, timeout=60), settings.model), checkpointer)

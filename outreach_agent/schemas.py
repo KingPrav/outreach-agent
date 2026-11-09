@@ -24,6 +24,7 @@ class State(TypedDict, total=False):
     feedback: dict                                  # name -> problems from the last check
     revisions: int
     report_path: str
+    metrics: Annotated[list[dict], operator.add]    # one row per node run: time, model calls, tokens
 
 
 class Highlight(BaseModel):

@@ -15,6 +15,11 @@ EMAIL_WORD_TOLERANCE = 20   # drafts slightly over the target are fine; far over
 MAX_REVISIONS = 2           # first draft + one redraft
 
 
+def _price(name: str) -> float | None:
+    value = os.getenv(name, "").strip()
+    return float(value) if value else None
+
+
 @dataclass(frozen=True)
 class Settings:
     model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -23,6 +28,10 @@ class Settings:
     max_people: int = int(os.getenv("MAX_PEOPLE", "6"))
     outputs: Path = ROOT / "outputs"
     gmail_account: str = os.getenv("GMAIL_ACCOUNT", "")   # which signed-in Google account Gmail links open
+    # Dollars per million tokens, for the cost estimate in run stats. Unset = no estimate.
+    price_input: float | None = _price("OPENAI_PRICE_INPUT_PER_M")
+    price_cached_input: float | None = _price("OPENAI_PRICE_CACHED_INPUT_PER_M")
+    price_output: float | None = _price("OPENAI_PRICE_OUTPUT_PER_M")
 
     @property
     def cache_dir(self) -> Path:

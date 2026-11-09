@@ -22,6 +22,7 @@ from .cli import new_run_id
 from .clients import AgentError
 from .config import LINKEDIN_NOTE_LIMIT, Settings
 from .graph import build_graph
+from .metrics import one_line, summarize
 from .runtime import Services, open_services
 
 ServicesFactory = Callable[[Settings], AbstractAsyncContextManager[Services]]
@@ -195,6 +196,8 @@ def build_app(runner: OutreachRunner):
         result = out["result"]
         names = [p["name"] for p in result.get("selected", [])]
         status = "\n".join(out["logs"]) or "Nothing selected, nothing drafted."
+        if result.get("metrics") and names:
+            status += "\n\n" + one_line(summarize(result["metrics"], runner.settings))
         first = names[0] if names else None
         fields = draft_fields(result, first) if first else ("", "", "", "")
         gmail = compose_button(result, first, fields[1], fields[2], runner.settings.gmail_account)

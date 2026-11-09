@@ -42,16 +42,24 @@ picked up later from the UI or the command line. The screenshot uses the test fa
 
 ```mermaid
 graph TD
-    START([company + role]) --> load_profile --> find_domain --> find_people --> shortlist --> review
+    START([company + role]) --> load_profile
+    START --> find_people --> shortlist
+    START --> research_role
+    load_profile --> review
+    shortlist --> review
+    research_role --> review
     review{{"pause: you choose who to contact"}}
     review -->|one branch per person, parallel| research_person
-    review --> research_role
+    review -->|in parallel| verify_emails
     research_person --> draft
-    research_role --> draft
+    verify_emails --> draft
     draft --> check
     check -->|problems: redraft only those, once| draft
-    check --> verify_emails --> save
+    check --> save
 ```
+
+Everything that doesn't depend on who you pick runs in parallel before the review, so the wait after
+you approve is only the per-person work.
 
 | Component | Role |
 |---|---|
@@ -59,7 +67,8 @@ graph TD
 | `servers/research_server.py` | MCP server over Tavily: web search and page reading. LinkedIn and personal social media (Instagram, Facebook, TikTok, Threads, Pinterest, Snapchat) are never searched or read |
 | `outreach_agent/graph.py` | The graph. Depends only on small `StructuredLLM` and `Tools` interfaces, so it runs against fakes in tests |
 | `outreach_agent/checks.py` | Free deterministic checks: length limits, placeholders, stock phrases, wrong recipient or company |
-| `outreach_agent/runtime.py` | Opens both MCP servers, the model client and the SQLite checkpointer for a run |
+| `outreach_agent/runtime.py` | Opens both MCP servers (with retry policies), the model client and the SQLite checkpointer for a run |
+| `outreach_agent/metrics.py` | Times every step and counts model calls and tokens, including cached input |
 | `outreach_agent/cli.py`, `ui.py` | Command line and Gradio front ends over the same graph |
 
 ## Design decisions
@@ -75,6 +84,18 @@ graph TD
 - **Graceful degradation.** If Hunter can't resolve the company name, ranked fallback domains are tried;
   quota and auth errors stop the run immediately with a clear message.
 - **Small numbers on purpose:** at most `MAX_PEOPLE` (default 6) contacts per company.
+- **Overlap independent work.** Profile parsing, the people lookup and role research start together;
+  the two Hunter searches run concurrently; the domain search only runs if the company name lookup
+  finds nobody; email verification runs alongside per-person research.
+- **Prompt layout for caching.** Draft and check prompts put the context shared by every contact
+  (instructions, your profile, the role brief) first and the person-specific part last, so OpenAI's
+  prompt cache can serve the repeated prefix. The run stats show how much input came from the cache.
+- **Retries where they help.** Tool calls retry timeouts and 5xx errors with exponential backoff and
+  jitter (and Tavily's 429 rate limit); Hunter's 429 means the quota is gone and fails fast. The OpenAI
+  SDK handles its own retries.
+- **Every run is measured.** Each step records its time, model calls and tokens; the report ends with
+  a run stats table, and the UI shows the wait after approval, call count, cache share and (if you set
+  prices in `.env`) estimated cost.
 
 ## Evaluation
 
@@ -98,7 +119,7 @@ python -m evals.run_checker_eval --repeats 3      # with the model; also measure
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-python -m pytest -q                      # 56 offline tests: fake model and MCP servers, no keys
+python -m pytest -q                      # 66 offline tests: fake model and MCP servers, no keys
 cp .env.example .env                     # OpenAI, Hunter.io and Tavily keys
 ```
 
